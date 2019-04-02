@@ -27,7 +27,7 @@ from testenv.settings import (
     STATUS_AUTHN_FAILED, STATUS_SUCCESS,
 )
 from testenv.users import JsonUserManager
-from testenv.utils import Key, Slo, Sso, get_spid_error
+from testenv.utils import Key, Slo, Sso, get_spid_error, repr_saml
 
 # FIXME: move to a the parser.py module after metadata refactoring
 SPIDRequest = namedtuple('SPIDRequest', ['data', 'saml_tree'])
@@ -282,8 +282,9 @@ class IdpServer(object):
         """
         try:
             spid_request = self._parse_message(action='login')
+            pretty_saml = repr_saml(spid_request.data.saml_request)
             self.app.logger.debug(
-                'AuthnRequest: \n{}'.format(spid_request.data.saml_request)
+                'AuthnRequest: \n{}'.format(pretty_saml)
             )
             # Perform login
             key = self._store_request(spid_request.saml_tree)
@@ -632,6 +633,9 @@ class IdpServer(object):
                             _identity.copy(),
                             has_assertion=has_assertion
                         )
+                        self.app.logger.debug(
+                            'Response unsigned: \n{}'.format(response.to_xml().decode())
+                        )
                         response = sign_http_post(
                             response.to_xml(),
                             _pkey,
@@ -640,7 +644,7 @@ class IdpServer(object):
                             assertion=sign_assertion
                         )
                         self.app.logger.debug(
-                            'Response: \n{}'.format(response)
+                            'Response: \n{}'.format(response.decode())
                         )
                         rendered_template = render_template(
                             'form_http_post.html',

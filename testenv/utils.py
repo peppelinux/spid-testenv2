@@ -10,6 +10,11 @@ from datetime import datetime
 import lxml.etree as etree
 from lxml import objectify
 
+import base64
+import xml.dom.minidom
+import zlib
+from xml.parsers.expat import ExpatError
+
 from testenv.settings import MULTIPLE_OCCURRENCES_TAGS, SPID_ERRORS
 
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
@@ -119,6 +124,21 @@ def saml_to_dict(xmlstr):
 def get_today_utc_date():
     now = datetime.utcnow()
     return now
+
+
+def repr_saml(saml_str, b64=False):
+    """ Decode SAML from b64 and b64 deflated and
+        return a pretty printed representation
+    """
+    try:
+        msg = base64.b64decode(saml_str).decode() if b64 else saml_str
+        dom = xml.dom.minidom.parseString(msg)
+    except (UnicodeDecodeError, ExpatError):
+        # in HTTP-REDIRECT the base64 must be inflated
+        msg = base64.b64decode(saml_str)
+        inflated = zlib.decompress(msg, -15)
+        dom = xml.dom.minidom.parseString(inflated.decode())
+    return dom.toprettyxml()
 
 
 Org = namedtuple('Org', ['name', 'url'])
