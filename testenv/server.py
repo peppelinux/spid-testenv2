@@ -780,7 +780,7 @@ class IdpServer(object):
         """
         SLO endpoint
         """
-
+        # import pdb; pdb.set_trace()
         self.app.logger.debug("req: '%s'", request)
         try:
             spid_request = self._parse_message(action='logout')

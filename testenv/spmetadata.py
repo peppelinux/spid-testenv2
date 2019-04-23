@@ -8,12 +8,23 @@ import requests
 from testenv import config
 from testenv.exceptions import DeserializationError, MetadataLoadError, MetadataNotFoundError, ValidationError
 from testenv.saml import (
-    AssertionConsumerService, AttributeConsumingService, EntityDescriptor, KeyDescriptor, KeyInfo, RequestedAttribute,
-    SingleLogoutService, SPSSODescriptor, X509Certificate, X509Data,
-)
+    AssertionConsumerService,
+    AttributeConsumingService,
+    EntityDescriptor,
+    KeyDescriptor,
+    KeyInfo,
+    RequestedAttribute,
+    SingleLogoutService,
+    SPSSODescriptor,
+    X509Certificate,
+    X509Data)
+
 from testenv.utils import saml_to_dict
 from testenv.validators import (
-    ServiceProviderMetadataXMLSchemaValidator, SpidMetadataValidator, ValidatorGroup, XMLMetadataFormatValidator,
+    ServiceProviderMetadataXMLSchemaValidator,
+    SpidMetadataValidator,
+    ValidatorGroup,
+    XMLMetadataFormatValidator,
 )
 
 logging.basicConfig(level=logging.INFO)
