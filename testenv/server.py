@@ -7,11 +7,11 @@ import string
 from collections import namedtuple
 from datetime import datetime
 from hashlib import sha1
-from logging.handlers import RotatingFileHandler
 
 from flask import Response, abort, escape, redirect, render_template, request, session, url_for
+from flask_admin import Admin
 
-from testenv import config, spmetadata
+from testenv import config, log, spmetadata
 from testenv.crypto import HTTPPostSignatureVerifier, HTTPRedirectSignatureVerifier, sign_http_post, sign_http_redirect
 from testenv.exceptions import (
     DeserializationError, MetadataLoadError, NoCertificateError, RequestParserError, SignatureVerificationError,
@@ -26,11 +26,16 @@ from testenv.settings import (
     AUTH_NO_CONSENT, BINDING_HTTP_POST, BINDING_HTTP_REDIRECT, CHALLENGES_TIMEOUT, SPID_ATTRIBUTES, SPID_LEVELS,
     STATUS_AUTHN_FAILED, STATUS_SUCCESS,
 )
-from testenv.users import JsonUserManager
+# from testenv.users import JsonUserManager
+from testenv.storages import DatabaseSPProvider, UserProvider
 from testenv.utils import Key, Slo, Sso, get_spid_error, repr_saml
+
 
 # FIXME: move to a the parser.py module after metadata refactoring
 SPIDRequest = namedtuple('SPIDRequest', ['data', 'saml_tree'])
+
+
+logger = log.logger
 
 
 def from_session(key):
@@ -61,16 +66,29 @@ class IdpServer(object):
         """
         # bind Flask app
         self.app = app
-        self.user_manager = JsonUserManager()
         # setup
         self._config = conf or config.params
         self._registry = registry or spmetadata.registry
         self.app.secret_key = 'sosecret'
-        handler = RotatingFileHandler(
-            'spid.log', maxBytes=500000, backupCount=1
-        )
-        self.app.logger.addHandler(handler)
         self._prepare_server()
+        self.sp_metadata_manager = None
+        self.user_manager = UserProvider.factory(self._config)
+        self._setup_managers()
+
+    def _setup_managers(self):
+        if not self._config.database_admin_interface:
+            return
+
+        self.app.config['FLASK_ADMIN_SWATCH'] = 'cerulean'
+        self.admin = Admin(
+            self.app,
+            name='Ambiente di test SPID - Interfaccia di amministrazione',
+            template_mode='bootstrap3'
+        )
+        self.user_manager.register_admin(self.admin)
+        if 'db' in self._config.metadata:
+            self.sp_metadata_manager = DatabaseSPProvider(self._config.metadata['db'])
+            self.sp_metadata_manager.register_admin(self.admin)
 
     @property
     def _mode(self):
@@ -123,7 +141,7 @@ class IdpServer(object):
         :param kwargs: dictionary, extra arguments
         """
         level = self._spid_levels.index(level)
-        self.app.logger.debug(
+        logger.info(
             'spid level {} - verifica ({})'.format(level, verify))
         if verify:
             # Verify the challenge
@@ -189,7 +207,7 @@ class IdpServer(object):
 
         :param authnreq: authentication request string
         """
-        self.app.logger.debug('store_request: {}'.format(authnreq))
+        logger.info('store_request: {}'.format(authnreq))
         # FIXME: improve this
         from lxml.etree import tostring
         key = sha1(tostring(authnreq._xml_doc)).hexdigest()
@@ -336,7 +354,7 @@ class IdpServer(object):
                 'primary_attributes': spid_main_fields,
                 'secondary_attributes': spid_secondary_fields,
                 'users': self.user_manager.all(),
-                'sp_list': self._registry.service_providers,
+                'sp_list': self._registry.all(),
                 'can_add_user': can_add_user
             }
         )
@@ -373,7 +391,7 @@ class IdpServer(object):
                 'sp_list': [
                     {
                         "entityID": sp
-                    } for sp in self._registry.service_providers
+                    } for sp in self._registry.all()
                 ],
             }
         )
@@ -388,7 +406,7 @@ class IdpServer(object):
                 sp_id).assertion_consumer_service(index=acs_index)
             if acss:
                 destination = acss[0].get('Location')
-            self.app.logger.debug(
+            logger.debug(
                 'AssertionConsumerServiceIndex Location: {}'.format(
                     destination
                 )
@@ -396,7 +414,7 @@ class IdpServer(object):
         if destination is None:
             destination = getattr(req, 'assertion_consumer_service_url', None)
             if destination is not None and protocol_binding is not None:
-                self.app.logger.debug(
+                logger.debug(
                     'AssertionConsumerServiceURL: {}'.format(
                         destination
                     )
@@ -435,7 +453,7 @@ class IdpServer(object):
 
         key = from_session('request_key')
         relay_state = from_session('relay_state')
-        self.app.logger.debug('Request key: {}'.format(key))
+        logger.info('Request key: {}'.format(key))
         if key and key in self.ticket:
             authn_request = self.ticket[key]
             sp_id = authn_request.issuer.text.strip()
@@ -452,7 +470,8 @@ class IdpServer(object):
                         'action': url_for('login'),
                         'request_key': key,
                         'relay_state': relay_state,
-                        'extra_challenge': extra_challenge
+                        'extra_challenge': extra_challenge,
+                        'show_response_options': self._config.show_response_options,
                     }
                 )
                 return rendered_form, 200
@@ -558,12 +577,12 @@ class IdpServer(object):
                         _status_code = STATUS_AUTHN_FAILED if bad_status_code else STATUS_SUCCESS
 
                         identity = user['attrs'].copy()
-                        self.app.logger.debug(
+                        logger.debug(
                             'Unfiltered data: {}'.format(identity)
                         )
                         atcs_idx = getattr(
                             authn_request, 'attribute_consuming_service_index', None)
-                        self.app.logger.debug(
+                        logger.info(
                             'AttributeConsumingServiceIndex: {}'.format(
                                 atcs_idx
                             )
@@ -586,7 +605,7 @@ class IdpServer(object):
                             optional
                         )
 
-                        self.app.logger.debug(
+                        logger.debug(
                             'Filtered data: {}'.format(_identity)
                         )
 
@@ -692,7 +711,7 @@ class IdpServer(object):
                         'status_message': error_info[1]
                     }
                 ).to_xml()
-                self.app.logger.debug(
+                logger.info(
                     'Error response: \n{}'.format(response)
                 )
                 response = sign_http_post(
@@ -748,7 +767,7 @@ class IdpServer(object):
                         'status_message': error_info[1]
                     }
                 ).to_xml()
-                self.app.logger.debug(
+                logger.info(
                     'Error response: \n{}'.format(response)
                 )
                 response = sign_http_post(
@@ -780,7 +799,6 @@ class IdpServer(object):
         """
         SLO endpoint
         """
-        # import pdb; pdb.set_trace()
         self.app.logger.debug("req: '%s'", request)
         try:
             spid_request = self._parse_message(action='logout')
@@ -794,7 +812,7 @@ class IdpServer(object):
                     )
                 )
             response_binding = _slo.get('Binding')
-            self.app.logger.debug(
+            logger.info(
                 'Response binding: \n{}'.format(
                     response_binding
                 )
@@ -863,33 +881,30 @@ class IdpServer(object):
         with open(cert_file, 'r') as fp:
             cert = fp.readlines()[1:-1]
             cert = ''.join(cert)
-        endpoints = self._config.endpoints
-        sso = self._config.entity_id + endpoints.get('single_sign_on_service')
-        slo = self._config.entity_id + endpoints.get('single_logout_service')
         sso_list = []
         slo_list = []
         sso_list.append(
             Sso(
                 binding=BINDING_HTTP_POST,
-                location=sso
+                location=self._config.absolute_sso_url
             )
         )
         sso_list.append(
             Sso(
                 binding=BINDING_HTTP_REDIRECT,
-                location=sso
+                location=self._config.absolute_sso_url
             )
         )
         slo_list.append(
             Slo(
                 binding=BINDING_HTTP_POST,
-                location=slo
+                location=self._config.absolute_slo_url
             )
         )
         slo_list.append(
             Slo(
                 binding=BINDING_HTTP_REDIRECT,
-                location=slo
+                location=self._config.absolute_slo_url
             )
         )
         metadata = create_idp_metadata(

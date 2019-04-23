@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+import re
 from collections import namedtuple
 from datetime import datetime, timedelta
 
 import importlib_resources
 from lxml import etree
-import re
-from voluptuous import All, Any, Match, In, Invalid, Length, MultipleInvalid, Optional, Schema, Url
+from voluptuous import All, Any, In, Invalid, Length, Match, MultipleInvalid, Optional, Schema, Url
 from voluptuous.validators import Equal
 
 from testenv import config
@@ -15,8 +15,8 @@ from testenv.crypto import (
     load_certificate, verify_bad_certificate_algorithm, verify_certificate_algorithm, verify_certificate_expiration,
 )
 from testenv.exceptions import (
-    GroupValidationError, SPIDValidationError, StopValidation, UnknownEntityIDError, ValidationError,
-    XMLFormatValidationError, XMLSchemaValidationError,
+    GroupValidationError, MetadataNotFoundError, SPIDValidationError, StopValidation, UnknownEntityIDError,
+    ValidationError, XMLFormatValidationError, XMLSchemaValidationError,
 )
 from testenv.settings import (
     BINDING_HTTP_POST, DEFAULT_LIST_VALUE_ERROR, DEFAULT_VALUE_ERROR, DS as SIGNATURE, KEYDESCRIPTOR_USES,
@@ -76,8 +76,10 @@ def _check_certificate(cert):
         raise MultipleInvalid(errors=_errors)
     return cert
 
+
 def _strip_namespaces(string):
     return re.sub(r'\{(urn|http):.+?\}', '', string)
+
 
 class ValidatorGroup(object):
 
@@ -428,7 +430,7 @@ class SpidMetadataValidator(object):
                             except IndexError:
                                 _attr = ''
                             break
-                            
+
                         # strip namespaces for better readability
                         _paths.append(_strip_namespaces(str(_path)))
                 path = '/'.join(_paths)
@@ -499,27 +501,25 @@ class SpidRequestValidator(object):
             raise UnknownEntityIDError(
                 'Issuer non presente nella {}'.format(req_type)
             )
-        if issuer_name and issuer_name not in self._registry.service_providers:
+        try:
+            sp_metadata = self._registry.get(issuer_name)
+        except MetadataNotFoundError:
             raise UnknownEntityIDError(
                 'L\'entity ID "{}" indicato nell\'elemento <Issuer> non corrisponde a nessun Service Provider registrato in questo Identity Provider di test.'.format(issuer_name)
             )
-        sp_metadata = self._registry.get(issuer_name)
-        if sp_metadata is not None:
-            atcss = sp_metadata.attribute_consuming_services
-            attribute_consuming_service_indexes = [
-                str(
-                    el.get('attrs').get('index')
-                ) for el in atcss if 'index' in el.get('attrs', {})
-            ]
-            ascss = sp_metadata.assertion_consumer_services
-            assertion_consumer_service_indexes = [
-                str(el.get('index')) for el in ascss]
-            assertion_consumer_service_urls = [
-                str(el.get('Location')) for el in ascss]
-        else:
-            attribute_consuming_service_indexes = []
-            assertion_consumer_service_indexes = []
-            assertion_consumer_service_urls = []
+
+        atcss = sp_metadata.attribute_consuming_services
+        attribute_consuming_service_indexes = [
+            str(
+                el.get('attrs').get('index')
+            ) for el in atcss if 'index' in el.get('attrs', {})
+        ]
+        ascss = sp_metadata.assertion_consumer_services
+        assertion_consumer_service_indexes = [
+            str(el.get('index')) for el in ascss]
+        assertion_consumer_service_urls = [
+            str(el.get('Location')) for el in ascss]
+
         entity_id = self._config.entity_id
 
         issuer = Schema(
@@ -681,8 +681,9 @@ class SpidRequestValidator(object):
                     'ID': str,
                     'Version': Equal('2.0', msg=DEFAULT_VALUE_ERROR.format('2.0')),
                     'IssueInstant': All(str, _check_utc_date, self._check_date_in_range),
-                    'Destination': Equal(
-                        entity_id, msg=DEFAULT_VALUE_ERROR.format(entity_id)
+                    'Destination': In(
+                        [entity_id, self._config.absolute_sso_url],
+                        msg=DEFAULT_VALUE_ERROR.format(entity_id)
                     ),
                     Optional('ForceAuthn'): str,
                     Optional('AttributeConsumingServiceIndex'): In(
@@ -729,8 +730,9 @@ class SpidRequestValidator(object):
                     'ID': str,
                     'Version': Equal('2.0', msg=DEFAULT_VALUE_ERROR.format('2.0')),
                     'IssueInstant': All(str, _check_utc_date, self._check_date_in_range),
-                    'Destination': Equal(
-                        entity_id, msg=DEFAULT_VALUE_ERROR.format(entity_id)
+                    'Destination': In(
+                        [entity_id, self._config.absolute_sso_url],
+                        msg=DEFAULT_VALUE_ERROR.format(entity_id)
                     ),
                     Optional('NotOnOrAfter'): All(str, _check_utc_date, self._check_date_not_expired),
                     Optional('Reason'): str,
@@ -807,13 +809,13 @@ class SpidRequestValidator(object):
                             except IndexError:
                                 _attr = ''
                             break
-                        
+
                         # strip namespaces for better readability
                         _paths.append(_strip_namespaces(str(_path)))
                 path = '/'.join(_paths)
                 if _attr is not None:
                     path += " - attribute: " + _attr
-                
+
                 # find value to show (iterate multiple times inside data
                 # until we find the sub-element or attribute)
                 _val = data
@@ -824,13 +826,13 @@ class SpidRequestValidator(object):
                         _val = None
                     except ValueError:
                         _val = None
-                
+
                 # no need to show value if the error is the presence of the element
                 _msg = err.msg
                 if "extra keys not allowed" in _msg:
                     _val = None
                     _msg = "item not allowed"
-                
+
                 errors.append(
                     ValidationDetail(
                         _val, None, None, None, None, _msg, path
